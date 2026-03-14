@@ -19,24 +19,33 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 DEMO_AGENT_MODEL = os.getenv(
     "DEMO_AGENT_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"
 )
+# Explicit language for Live API: improves transcription. Model may not support all codes (e.g. en-IN unsupported on some).
+# Set PITCHPILOT_LIVE_LANGUAGE_CODE to en-US, en-GB, etc. Default en-US; leave unset to skip (auto-detect).
+LIVE_LANGUAGE_CODE = os.getenv("PITCHPILOT_LIVE_LANGUAGE_CODE", "en-US").strip() or None
 
 COACH_INSTRUCTION = """
 You are PitchPilot, a real-time AI presentation coach.
 
 You receive:
-1. The presenter's live speech (audio transcript)
+1. The presenter's live speech (audio transcript)—may be noisy, mixed-language, or fragmented.
 2. The current slide image whenever the slide changes.
 3. The message "[Presenter is now on slide N]" when they change slides (N = current slide number).
 
 Your goal is to help the presenter improve delivery WITHOUT interrupting their flow.
 
-SLIDE LABELLING (for UI grouping)
-- When you know the current slide (from "[Presenter is now on slide N]"), start your spoken feedback with the slide number (e.g. "Slide 2: Slow down your pace slightly."). In record_feedback messages, also include it (e.g. "Slide 2: Slow down your pace slightly.").
-- If you have not seen a slide number yet, use "Slide 1" or omit the prefix; still give feedback.
+OUTPUT RULES (CRITICAL)
+- Speak ONLY in complete, self-contained sentences. Never output fragments, mid-sentence cuts, or run-ons (e.g. no "Consider organizing... perhaps", "or 4, to maintain clarity", "Hello. You can start with the presentation" after the session has started).
+- Each time you speak, give exactly 1–2 full sentences that make sense on their own. Do not start a sentence you cannot finish.
+- If the transcript is unclear, mixed-language, or badly tokenized: ignore the literal words and give feedback only on delivery you can infer (e.g. pacing, clarity). Do not repeat, paraphrase, or refer to unclear transcript. Do not output greetings like "Hello, you can start" once the rehearsal is under way—only give delivery tips.
+- Focus strictly on presentation delivery: pacing, filler words, clarity, slide alignment. Do not suggest reorganizing slide content or changing what they say; only how they deliver it.
+
+SLIDE LABELLING
+- When you know the current slide (from "[Presenter is now on slide N]"), start your spoken feedback with the slide number (e.g. "Slide 2: Slow down your pace slightly."). In record_feedback, include the slide number in the message (e.g. "Slide 2: Slow down your pace slightly.").
+- If you have not seen a slide number yet, use "Slide 1" or omit the prefix.
 
 CORE BEHAVIOR
-- When the presenter could benefit from a tip (pacing, filler words, clarity, slide alignment), respond with a short spoken sentence. The user expects to hear from you during the rehearsal.
-- Keep tips brief (one sentence). If there is genuinely nothing to add for a while, it is okay to stay silent briefly, but do give feedback when you notice something to improve or something done well.
+- When the presenter could benefit from a tip, respond soon in 1–2 complete sentences. Do not wait for long pauses.
+- Example of good feedback: "Slide 2: You're speaking a bit fast. Pause after each bullet so the audience can absorb it."
 
 FEEDBACK PRIORITY (highest to lowest)
 1. Excess filler words ("um", "like", "you know", "basically")
@@ -44,57 +53,25 @@ FEEDBACK PRIORITY (highest to lowest)
 3. Misalignment between speech and slide content
 4. General clarity improvements
 
-When multiple issues occur, focus on the MOST important one.
+When multiple issues occur, focus on the MOST important one. One improvement per turn.
 
 FEEDBACK STYLE
-- Be supportive, calm, and constructive.
+- Be supportive, calm, and constructive. Focus on actionable advice.
 - Never criticize harshly.
-- Focus on actionable advice.
 
 REAL-TIME COACHING
-During active presentation:
-- Keep responses extremely short (ideally one sentence).
-- Only highlight the most important improvement.
+- Respond promptly when there is a tip worth giving (roughly every 20–40 seconds if needed).
+- Always call record_feedback with the same tip so it appears in Key takeaways. Use feedback_type = one of ["filler", "pacing", "clarity", "general"] and message = one complete sentence including slide number when known (e.g. "Slide 2: Slow down your pace slightly."). Message must be natural language only, 5–500 characters; no function names or syntax.
 
-SLIDE COACH MODE
-When a slide section finishes or when meaningful coaching is needed:
-You may provide more detailed feedback about the slide.
-
-Structure the response as:
-
-Slide Feedback:
-Brief but clear explanation of what worked well and what could improve (2–4 sentences max).
-
-Key Takeaway:
-One concise actionable tip the presenter should remember.
-
-SLIDE EVALUATION
-When a slide is visible:
-- Check whether the presenter explains the key elements on the slide.
-- Detect if the explanation is unclear, rushed, or missing important points.
-- Suggest how they could explain the slide more effectively.
-
-TOOL USAGE
-- You must speak your feedback in natural language so the presenter hears it (e.g. "Slide 2: Slow down your pace slightly so each point lands clearly."). Do not say or type "record_feedback" or any function call—only natural speech.
-- When you give a concrete coaching tip, you may also call the record_feedback tool so the tip appears in Key takeaways. Use feedback_type = one of ["filler", "pacing", "clarity", "general"] and message = the same short tip (include slide number in message, e.g. "Slide 2: Slow down your pace slightly."). Call the tool in addition to speaking, not instead of speaking.
-
-Do NOT call the tool if:
-- feedback is trivial
-- the presenter is doing well
-- feedback was just given very recently
+TOOL USAGE (IMPORTANT)
+- Your spoken output must be ONLY natural language. Never say or output "record_feedback" or any function-call syntax. The tool is invoked separately; the user must never see or hear it.
+- You MUST call the record_feedback tool for every concrete tip. Only skip when the presenter is doing well and you have nothing to suggest.
 
 Q&A MODE
-When Q&A mode is active:
-1. Predict one realistic audience question based on the slide and explanation.
-2. Wait for the presenter to answer.
-3. Evaluate their response briefly.
-4. Then ask the next predicted question.
-
-Always ask ONE question at a time.
+When Q&A mode is active: ask ONE question at a time, wait for the answer, give a brief evaluation, then the next question. No greetings or off-topic content.
 
 GENERAL RULE
-You are a supportive presentation coach helping the presenter improve step by step.
-Do not overwhelm the presenter with too much feedback at once.
+You are a supportive presentation coach. Output only complete, relevant delivery feedback. No fragments, no greetings mid-session, no repeating unclear transcript.
 """
 
 CHALLENGE_INSTRUCTION = """
@@ -118,7 +95,7 @@ USE_TOOLS = not _DISABLE_TOOLS
 
 RECORD_FEEDBACK_DECLARATION = {
     "name": "record_feedback",
-    "description": "Record a piece of coaching feedback for the user (filler, pacing, clarity, general). Always include the slide number in the message (e.g. 'Slide 2: ...') so feedback is grouped by slide.",
+    "description": "Record a coaching tip so it appears in the Key takeaways list in the UI. You MUST call this for every concrete tip you give (filler, pacing, clarity, or general)—otherwise the user will not see any key takeaways. Always include the slide number in the message (e.g. 'Slide 2: Slow down your pace slightly.') so feedback is grouped by slide.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -174,10 +151,12 @@ def _live_config(
         "input_audio_transcription": types.AudioTranscriptionConfig(),
         "output_audio_transcription": types.AudioTranscriptionConfig(),
         "context_window_compression": types.ContextWindowCompressionConfig(
-            trigger_tokens=12_000,
-            sliding_window=types.SlidingWindow(target_tokens=6_000),
+            trigger_tokens=10_000,
+            sliding_window=types.SlidingWindow(target_tokens=5_000),
         ),
     }
+    if LIVE_LANGUAGE_CODE:
+        config["speech_config"] = types.SpeechConfig(language_code=LIVE_LANGUAGE_CODE)
     if use_tools:
         config["tools"] = [{"function_declarations": [RECORD_FEEDBACK_DECLARATION]}]
     return config
@@ -226,6 +205,46 @@ def _message_to_frontend(msg: types.LiveServerMessage) -> dict:
     return out
 
 
+def _sanitize_for_log(obj: dict) -> dict:
+    """Replace base64 data with a placeholder so logs stay readable."""
+    if not isinstance(obj, dict):
+        return obj
+    out = {}
+    for k, v in obj.items():
+        if k == "data" and isinstance(v, str) and len(v) > 60:
+            out[k] = f"<base64 len={len(v)}>"
+        elif isinstance(v, dict):
+            out[k] = _sanitize_for_log(v)
+        elif isinstance(v, list):
+            out[k] = [_sanitize_for_log(x) if isinstance(x, dict) else x for x in v]
+        else:
+            out[k] = v
+    return out
+
+
+def _log_agent_output(payload: dict) -> None:
+    """Log agent response only (no user transcript): output_transcription, content, tool_call, validated_feedback, etc."""
+    if not payload:
+        return
+    agent_only = {
+        k: v
+        for k, v in payload.items()
+        if k
+        in (
+            "output_transcription",
+            "content",
+            "tool_call",
+            "validated_feedback",
+            "interrupted",
+            "go_away",
+        )
+    }
+    if not agent_only:
+        return
+    to_log = _sanitize_for_log(agent_only)
+    logger.info("Agent response: %s", json.dumps(to_log, default=str))
+
+
 async def _run_downstream(sess, websocket, session_lock) -> None:
     """Run the receive loop for one Live API session. Raises when the connection is lost."""
     _receive = getattr(sess, "_receive", None)
@@ -233,46 +252,102 @@ async def _run_downstream(sess, websocket, session_lock) -> None:
         while True:
             async for response in sess.receive():
                 payload = _message_to_frontend(response)
-                if payload:
-                    await websocket.send_text(json.dumps(payload))
                 if getattr(response, "tool_call", None) and getattr(
                     response.tool_call, "function_calls", None
                 ):
                     from app.agent.tools import record_feedback
-                    function_responses = [
-                        types.FunctionResponse(
-                            name=fc.name,
-                            id=fc.id,
-                            response={"result": record_feedback(
-                                feedback_type=(fc.args or {}).get("feedback_type", "general"),
-                                message=(fc.args or {}).get("message", ""),
-                            )},
-                        )
-                        for fc in response.tool_call.function_calls
-                    ]
-                    await sess.send_tool_response(function_responses=function_responses)
+                    from app.schemas.feedback import validate_feedback_args
+                    function_responses = []
+                    validated_messages = []
+                    for fc in response.tool_call.function_calls:
+                        if getattr(fc, "name", None) != "record_feedback":
+                            function_responses.append(
+                                types.FunctionResponse(
+                                    name=fc.name,
+                                    id=fc.id,
+                                    response={"result": record_feedback("general", "")},
+                                )
+                            )
+                            continue
+                        raw_args = fc.args if hasattr(fc, "args") and fc.args else {}
+                        validated = validate_feedback_args(raw_args)
+                        if validated:
+                            function_responses.append(
+                                types.FunctionResponse(
+                                    name=fc.name,
+                                    id=fc.id,
+                                    response={"result": record_feedback(
+                                        validated.feedback_type,
+                                        validated.message,
+                                    )},
+                                )
+                            )
+                            validated_messages.append(validated.message)
+                        else:
+                            function_responses.append(
+                                types.FunctionResponse(
+                                    name=fc.name,
+                                    id=fc.id,
+                                    response={"result": {"status": "error", "reason": "invalid_args"}},
+                                )
+                            )
+                    if validated_messages and payload is not None:
+                        payload["validated_feedback"] = [{"message": m} for m in validated_messages]
+                    if function_responses:
+                        await sess.send_tool_response(function_responses=function_responses)
+                if payload:
+                    _log_agent_output(payload)
+                    await websocket.send_text(json.dumps(payload))
     else:
         while True:
             response = await _receive()
             payload = _message_to_frontend(response)
-            if payload:
-                await websocket.send_text(json.dumps(payload))
             if getattr(response, "tool_call", None) and getattr(
                 response.tool_call, "function_calls", None
             ):
                 from app.agent.tools import record_feedback
-                function_responses = [
-                    types.FunctionResponse(
-                        name=fc.name,
-                        id=fc.id,
-                        response={"result": record_feedback(
-                            feedback_type=(fc.args or {}).get("feedback_type", "general"),
-                            message=(fc.args or {}).get("message", ""),
-                        )},
-                    )
-                    for fc in response.tool_call.function_calls
-                ]
-                await sess.send_tool_response(function_responses=function_responses)
+                from app.schemas.feedback import validate_feedback_args
+                function_responses = []
+                validated_messages = []
+                for fc in response.tool_call.function_calls:
+                    if getattr(fc, "name", None) != "record_feedback":
+                        function_responses.append(
+                            types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"result": record_feedback("general", "")},
+                            )
+                        )
+                        continue
+                    raw_args = fc.args if hasattr(fc, "args") and fc.args else {}
+                    validated = validate_feedback_args(raw_args)
+                    if validated:
+                        function_responses.append(
+                            types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"result": record_feedback(
+                                    validated.feedback_type,
+                                    validated.message,
+                                )},
+                            )
+                        )
+                        validated_messages.append(validated.message)
+                    else:
+                        function_responses.append(
+                            types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"result": {"status": "error", "reason": "invalid_args"}},
+                            )
+                        )
+                if validated_messages and payload is not None:
+                    payload["validated_feedback"] = [{"message": m} for m in validated_messages]
+                if function_responses:
+                    await sess.send_tool_response(function_responses=function_responses)
+            if payload:
+                _log_agent_output(payload)
+                await websocket.send_text(json.dumps(payload))
 
 
 async def run_live_session(
@@ -283,7 +358,7 @@ async def run_live_session(
     slide_index: int | None = None,
 ) -> None:
     """Run a Live API session over the given WebSocket. Stays open until the client disconnects (Stop rehearsal).
-    Reconnects to the Live API automatically on 1011 or connection loss so feedback continues until you stop.
+    Reconnects to the Live API automatically on 1011, 1008, or connection loss so feedback continues until you stop.
     If session_id is provided, slide text content for that session is injected so the coach can give specific feedback.
     When mode='challenge', scope is 'all' or 'slide' and slide_index is used for single-slide scope; challenge instruction is used with no tools."""
     if not GOOGLE_API_KEY:
@@ -366,15 +441,16 @@ async def run_live_session(
         except Exception as e:
             logger.debug("Upstream ended: %s", e)
 
-    def _is_1011(e: BaseException) -> bool:
+    def _should_reconnect(e: BaseException) -> bool:
+        """True if we should auto-reconnect (1011, 1008, or connection loss)."""
         code = getattr(e, "code", None)
-        if code == 1011:
+        if code in (1011, 1008):
             return True
         msg = str(e).lower()
-        return "1011" in msg or "internal error" in msg
+        return "1011" in msg or "1008" in msg or "internal error" in msg or "not implemented" in msg or "not supported" in msg
 
     async def run_downstream_loop() -> None:
-        """Connect to Live API and run downstream; reconnect on 1011/connection loss until cancelled."""
+        """Connect to Live API and run downstream; reconnect on 1011/1008/connection loss until cancelled."""
         while True:
             session_ref.clear()
             try:
@@ -392,9 +468,9 @@ async def run_live_session(
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
-                        is_1011 = _is_1011(e)
-                        if is_1011:
-                            logger.warning("Live API 1011 (internal error). Reconnecting…")
+                        reconnect = _should_reconnect(e)
+                        if reconnect:
+                            logger.warning("Live API connection closed (code %s). Reconnecting…", getattr(e, "code", None))
                         else:
                             logger.warning("Live connection error: %s", e)
                         # Notify client first so they show "Reconnecting…" before we sleep
@@ -403,7 +479,7 @@ async def run_live_session(
                         except Exception:
                             pass
                         session_ref.clear()
-                        await asyncio.sleep(2 if is_1011 else 1)
+                        await asyncio.sleep(2 if reconnect else 1)
                         continue
             except asyncio.CancelledError:
                 break

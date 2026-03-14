@@ -225,13 +225,25 @@ export function useLiveSession(sessionId, slideUrls = [], options = null) {
         if (data.go_away) {
           setGoAway(data.go_away)
         }
+        // Key takeaways: prefer backend-validated feedback (Pydantic schema) so only valid items appear
+        const validated = data.validated_feedback
+        if (Array.isArray(validated)) {
+          const messages = validated.map((v) => v?.message).filter(Boolean)
+          if (messages.length)
+            setFeedback((f) => [...f.slice(-19), ...messages])
+        } else if (validated?.message) {
+          setFeedback((f) => [...f.slice(-19), validated.message])
+        }
         const rawOut = (data.outputTranscription?.text ?? data.output_transcription?.text)?.trim()
         if (rawOut != null && rawOut !== '') {
           // Remove tool syntax, XML, and internal cues not meant for display
           let outText = rawOut
             .replace(/<\/?record_feedback[^>]*>/gi, '')
             .replace(/<record_feedback[^>]*>/gi, '')
+            // Named-argument form: record_feedback(feedback_type = "pacing", message = "...")
             .replace(/record_feedback\s*\(\s*feedback_type\s*=\s*["']?\w+["']?\s*,\s*message\s*=\s*(?:"[^"]*"|[^)]*)\)/gi, '')
+            // Positional form: record_feedback ("pacing", "Try to slow down...") or record_feedback('pacing', '...')
+            .replace(/record_feedback\s*\(\s*["'][^"']*["']\s*,\s*["'][^"']*["']\s*\)/gi, '')
             .replace(/<ctrl\d+>/gi, '')
             .replace(/<[a-zA-Z][^>]*>/g, '')
             .replace(/\[Presenter is now on slide \d+\]/gi, '')
@@ -239,10 +251,12 @@ export function useLiveSession(sessionId, slideUrls = [], options = null) {
             .trim()
           // Trim stray punctuation left after removing tool calls (e.g. ".)" or ").")
           outText = outText.replace(/^\s*[.)]\s*|\s*[.(]\s*$/g, '').trim()
-          if (outText) {
+          // Allow streaming chunks (API sends small pieces like " Slow", " down"); only skip trailing fragment noise
+          const fragmentEndings = /\b(perhaps|also,|or \d+,|to maintain)\s*$/i
+          if (outText && !fragmentEndings.test(outText)) {
             setLatestAgentText((prev) => {
               if (prev && (outText === prev || outText.startsWith(prev))) return outText
-              return prev ? prev + ' ' + outText : outText
+              return prev ? prev + (prev.endsWith(' ') || outText.startsWith(' ') ? '' : ' ') + outText : outText
             })
           }
         }
@@ -263,9 +277,14 @@ export function useLiveSession(sessionId, slideUrls = [], options = null) {
           }
           for (const part of parts) {
             const fc = part.function_call ?? part.functionCall
+            // Key takeaways come from validated_feedback (backend); only use raw tool call if no validated_feedback
             if (fc?.name === 'record_feedback') {
               const args = fc.args ?? fc.arguments ?? {}
-              if (args.message) setFeedback((f) => [...f.slice(-19), args.message])
+              const hasValidated = Array.isArray(data.validated_feedback)
+                ? data.validated_feedback.length > 0
+                : data.validated_feedback?.message
+              if (args?.message && !hasValidated)
+                setFeedback((f) => [...f.slice(-19), args.message])
             }
             const inline = part.inline_data ?? part.inlineData
             if (inline?.data && !skipPlayback && wsOptionsRef.current?.mode === 'challenge') {
@@ -274,10 +293,14 @@ export function useLiveSession(sessionId, slideUrls = [], options = null) {
           }
         }
         const toolCalls = data.toolCall?.functionCalls ?? data.tool_call?.function_calls
-        if (Array.isArray(toolCalls)) {
+        const hasValidated = Array.isArray(data.validated_feedback)
+          ? data.validated_feedback.length > 0
+          : data.validated_feedback?.message
+        if (Array.isArray(toolCalls) && !hasValidated) {
           for (const call of toolCalls) {
-            if (call.name === 'record_feedback' && call.args?.message) {
-              setFeedback((f) => [...f.slice(-19), call.args.message])
+            const args = call.args ?? call.arguments ?? {}
+            if (call.name === 'record_feedback' && args.message) {
+              setFeedback((f) => [...f.slice(-19), args.message])
             }
           }
         }
