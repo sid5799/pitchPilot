@@ -1,0 +1,29 @@
+# Dependencies
+frontend/node_modules/
+backend/venv/
+
+# Environment and secrets
+backend/.env
+.env
+.env.local
+*.env
+
+# Build / cache
+frontend/dist/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*

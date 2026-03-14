@@ -1,0 +1,22 @@
+# FastAPI and server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=14.0
+python-multipart>=0.0.12
+
+# ADK and Gemini
+google-adk>=1.10.0
+google-genai>=1.0.0
+
+# Slide parsing (pymupdf works without system poppler)
+pymupdf>=1.24.0
+pdf2image>=1.17.0
+python-pptx>=0.6.23
+Pillow>=11.0.0
+
+# Storage
+google-cloud-storage>=2.18.0
+
+# Env and utils
+python-dotenv>=1.0.0
+pydantic>=2.0.0
